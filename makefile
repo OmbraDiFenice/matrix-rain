@@ -1,5 +1,5 @@
 build:
-	coffee -bc --no-header matrixRain.coffee
+	node_modules\coffeescript\bin\coffee -bc --no-header matrixRain.coffee
 	echo '#!/usr/bin/env node' | cat - matrixRain.js > matrixRain
 	rm matrixRain.js
 	chmod a+x matrixRain

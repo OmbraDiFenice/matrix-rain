@@ -1,5 +1,52 @@
 #!/usr/bin/env node
-var c, colorDropPropability, createDroplet, direction, dropletCount, droplets, fileContents, filePath, filePos, flush, fs, getChars, getFileChars, maxDroplets, maxSpeed, numCols, numRows, outBuffer, parseCliParams, rand, readFileContents, refreshDropletParams, shuffledCols, stdout, tty, updateCount, updateDroplets, updateMs, write;
+//!/usr/bin/env coffee
+var args, art, blankChar, c, colorDropPropability, computeMask, createDroplet, dropletCount, droplets, flush, fs, getChars, getFileChars, mask, maskHeight, maskWidth, maxDroplets, maxSpeed, numCols, numRows, outBuffer, parseArgs, parseCliParams, rand, readFileContents, refreshDropletParams, shuffledCols, stdout, strip, tty, updateCount, updateDroplets, updateMs, write, writeHead;
+
+parseArgs = require('minimist');
+
+args = {};
+
+art = require('ascii-art');
+
+strip = require('strip-ansi');
+
+mask = '';
+
+maskWidth = maskHeight = 0;
+
+blankChar = ' ';
+
+computeMask = function() {
+  var conf;
+  conf = {
+    filepath: args.maskPath,
+    alphabet: "bits",
+    width: Math.min(numCols, args.maskMaxWidth),
+    height: Math.min(numRows, args.maskMaxHeight) * args.scalingFactor
+  };
+  return new Promise(function(resolve, reject) {
+    return (new art.Image(conf)).write(function(err, render) {
+      if (err) {
+        write(tty.reset);
+        write(tty.cursorVisible);
+        flush();
+        c.log(err);
+        reject(err);
+        process.exit(1);
+      }
+      mask = strip(render).split('\n');
+      mask = mask.slice(0, mask.length - 1);
+      maskWidth = mask[0].length;
+      maskHeight = mask.length;
+      if (args.invertMask) {
+        blankChar = '#';
+      } else {
+        blankChar = ' ';
+      }
+      return resolve(mask);
+    });
+  });
+};
 
 fs = require('fs');
 
@@ -19,8 +66,6 @@ shuffledCols = [];
 
 droplets = [];
 
-direction = "v";
-
 updateMs = 30;
 
 updateCount = 0;
@@ -29,25 +74,20 @@ maxSpeed = 20;
 
 colorDropPropability = 0.001;
 
-filePath = null;
-
-filePos = 0;
-
-fileContents = null;
-
+// http://ascii-table.com/ansi-escape-sequences-vt-100.php
 tty = {
   clearScreen: "\x1b[2J",
   moveCursorToHome: "\x1b[H",
   moveCursorTo: function(row, col) {
-    return "\x1b[" + row + ";" + col + "H";
+    return `\x1b[${row};${col}H`;
   },
   cursorVisible: '\x1b[?25h',
   cursorInvisible: '\x1b[?25l',
   fgColor: function(c) {
-    return "\x1b[38;5;" + c + "m";
+    return `\x1b[38;5;${c}m`;
   },
   bgColor: function(c) {
-    return "\x1b[48;5;" + c + "m";
+    return `\x1b[48;5;${c}m`;
   },
   underline: "\x1b[4m",
   bold: "\x1b[1m",
@@ -57,8 +97,29 @@ tty = {
 
 outBuffer = "";
 
+// perf is improved if we write to stdout in batches
 write = function(chars) {
   return outBuffer += chars;
+};
+
+writeHead = function(drop) {
+  var col, maxCol, maxRow, row;
+  if (!args.maskPath) {
+    write(drop.headChar);
+    return;
+  }
+  row = drop.row - args.offsetRow;
+  col = drop.col - args.offsetCol;
+  maxRow = maskHeight;
+  maxCol = maskWidth;
+  if (args.direction === 'h') {
+    [col, row] = [row, col];
+  }
+  if (row >= 0 && col >= 0 && row < maxRow && col < maxCol && mask[row][col] === blankChar) {
+    return write(" ");
+  } else {
+    return write(drop.headChar);
+  }
 };
 
 flush = function() {
@@ -66,10 +127,12 @@ flush = function() {
   return outBuffer = "";
 };
 
+// on resize
 stdout.on('resize', function() {
   return refreshDropletParams();
 });
 
+// on exit
 process.on('SIGINT', function() {
   write(tty.reset);
   write(tty.cursorVisible);
@@ -78,11 +141,15 @@ process.on('SIGINT', function() {
 });
 
 refreshDropletParams = function() {
-  var i, j, k, maxLength, minLength, moveCursorTo, ref, ref1, ref2, results, results1, rnd;
+  var i, j, maxLength, minLength, moveCursorTo, ref, rnd;
   numCols = stdout.columns;
   numRows = stdout.rows;
-  if (direction === "h") {
-    ref = [numRows, numCols], numCols = ref[0], numRows = ref[1];
+  if (args.maskPath) {
+    computeMask();
+  }
+  // invert rows and columns
+  if (args.direction === "h") {
+    [numCols, numRows] = [numRows, numCols];
     if (!tty.moveCursorTo.proxied) {
       moveCursorTo = tty.moveCursorTo;
       tty.moveCursorTo = function(row, col) {
@@ -94,17 +161,18 @@ refreshDropletParams = function() {
   minLength = numRows;
   maxLength = numRows;
   maxDroplets = numCols * 2;
+  //create shuffled cols array
   shuffledCols = (function() {
-    results = [];
+    var results = [];
     for (var j = 0; 0 <= numCols ? j < numCols : j > numCols; 0 <= numCols ? j++ : j--){ results.push(j); }
     return results;
   }).apply(this);
-  results1 = [];
-  for (i = k = 0, ref1 = numCols; 0 <= ref1 ? k < ref1 : k > ref1; i = 0 <= ref1 ? ++k : --k) {
+  for (i = j = 0, ref = numCols; (0 <= ref ? j < ref : j > ref); i = 0 <= ref ? ++j : --j) {
     rnd = rand(0, numCols);
-    results1.push((ref2 = [shuffledCols[rnd], shuffledCols[i]], shuffledCols[i] = ref2[0], shuffledCols[rnd] = ref2[1], ref2));
+    [shuffledCols[i], shuffledCols[rnd]] = [shuffledCols[rnd], shuffledCols[i]];
   }
-  return results1;
+  write(tty.cursorInvisible);
+  return flush();
 };
 
 createDroplet = function() {
@@ -125,30 +193,37 @@ updateDroplets = function() {
   remainingDroplets = [];
   for (j = 0, len1 = droplets.length; j < len1; j++) {
     drop = droplets[j];
+    // remove out of bounds drops
     if ((drop.row - drop.length) >= numRows || drop.col >= numCols) {
       continue;
     } else {
       remainingDroplets.push(drop);
     }
+    // process drop speed
     if ((updateCount % drop.speed) === 0) {
+      // update old head
       if (drop.row > 0 && drop.row <= (numRows + 1)) {
         write(tty.moveCursorTo(drop.row - 1, drop.col));
         if (Math.random() < colorDropPropability) {
           write(tty.fgColor(rand(1, 255)));
-          write(drop.headChar);
+          writeHead(drop);
           write(tty.off);
         } else {
-          write(drop.headChar);
+          // change head back to default
+          writeHead(drop);
         }
       }
       if (drop.row <= numRows) {
         write(tty.moveCursorTo(drop.row, drop.col));
-        write(tty.fgColor(7));
+        // write new head
+        write(tty.fgColor(7)); //white
+        //write tty.underline
         drop.headChar = drop.chars.charAt(drop.row);
-        write(drop.headChar);
+        writeHead(drop);
         write(tty.off);
       }
       if ((drop.row - drop.length) >= 0) {
+        // remove tail
         write(tty.moveCursorTo(drop.row - drop.length, drop.col));
         write(" ");
       }
@@ -175,59 +250,106 @@ getChars = function(len) {
   return chars;
 };
 
-getFileChars = function(len) {
-  var chars;
-  chars = fileContents.substr(filePos, len);
-  if (chars.length !== len) {
-    filePos = len - chars.length;
-    chars += fileContents.substr(0, filePos);
-  } else {
-    filePos += len;
-  }
-  return chars;
+getFileChars = function(fileContents) {
+  var filePos;
+  filePos = 0;
+  return function(len) {
+    var chars;
+    chars = fileContents.substr(filePos, len);
+    if (chars.length !== len) {
+      filePos = len - chars.length;
+      chars += fileContents.substr(0, filePos);
+    } else {
+      filePos += len;
+    }
+    return chars;
+  };
 };
 
-readFileContents = function() {
-  if (filePath) {
-    fileContents = fs.readFileSync(filePath, "utf-8");
-    fileContents = fileContents.replace(/^\s+|\r|\n/gm, " ");
-    return getChars = getFileChars;
-  }
+readFileContents = function(filePath) {
+  var fileContents;
+  fileContents = fs.readFileSync(filePath, "utf-8");
+  fileContents = fileContents.replace(/^\s+|\r|\n/gm, " ");
+  return getChars = getFileChars(fileContents);
 };
 
 parseCliParams = function() {
-  var arg, args, j, len1, match;
-  args = process.argv.splice(2);
-  for (j = 0, len1 = args.length; j < len1; j++) {
-    arg = args[j];
-    if (arg === "--help") {
-      c.log("Usage: matrix-rain opts? filePath?");
-      c.log("opts: --direction=v|h = change direction. If reading from file direction is h (horizontal)");
-      c.log("filePath: Read characters from file and set direction=h");
-      c.log("By default generate random ascii chars in v (vertical) direction");
-      process.exit(0);
+  var filePath, match;
+  args = parseArgs(process.argv.splice(2), {
+    string: ['direction', 'd', 'maskPath', 'm', 'scalingFactor'],
+    boolean: ['help', 'h', 'invertMask', 'i', 'printMask'],
+    alias: {
+      'direction': 'd',
+      'maskPath': 'm',
+      'invertMask': 'i',
+      'help': 'h'
+    },
+    default: {
+      'direction': 'v',
+      'invertMask': false,
+      'help': false,
+      'offsetRow': 0,
+      'offsetCol': 0,
+      'scalingFactor': 2,
+      'maskMaxWidth': numCols,
+      'maskMaxHeight': numRows,
+      'printMask': false
     }
-    if (arg.indexOf("--direction") === 0) {
-      match = arg.match(/^\-\-direction=(v|h)/);
-      if (match) {
-        direction = match[1];
-      } else {
-        c.error("unrecognized direction arg", arg);
-        process.exit(1);
+  });
+  if (args.help) {
+    c.log("Usage: matrix-rain [opts] [filePath]");
+    c.log("filePath: Read characters from file, otherwise generate random ascii characters");
+    c.log("opts:");
+    c.log("      -h|--help               show this help and exit");
+    c.log("      -d|--direction=v|h      change direction. If reading from file direction is h (horizontal). Default: v");
+    c.log("      -m|--maskPath=filePath  use the specified image to build a mask for the raindrops");
+    c.log("      -i|--invertMask         invert the mask specified with --maskPath");
+    c.log("      --offsetRow=n           move the upper left corner of the mask down n rows");
+    c.log("      --offsetCol=n           move the upper left corner of the mask right n columns");
+    c.log("      --scalingFactor=n       ratio between character height over width in the terminal. Default: 2");
+    c.log("      --maskMaxWidth=n        max width of the mask image, in columns. Default: terminal current columns");
+    c.log("      --maskMaxHeight=n       max height of the mask image, in rows. Default: terminal current rows");
+    c.log("      --printMask             print mask and exit");
+    process.exit(0);
+  }
+  if (args.printMask) {
+    if (!args.maskPath) {
+      c.log("no mask provided. Use --maskPath option to set one");
+      process.exit();
+    }
+    computeMask().then(function(mask) {
+      var j, r, ref;
+      for (r = j = 0, ref = args.offsetRow; (0 <= ref ? j <= ref : j >= ref); r = 0 <= ref ? ++j : --j) {
+        c.log("");
       }
+      mask.forEach(function(row, i) {
+        return c.log(" ".repeat(args.offsetCol), row);
+      });
+      return process.exit();
+    });
+  }
+  match = args.direction.match(/^(v|h)$/);
+  if (!match) {
+    c.error("unrecognized direction arg '", args.direction, "'");
+    process.exit(1);
+  }
+  if (args._.length > 0) {
+    filePath = args._[0];
+    if (!fs.existsSync(filePath)) {
+      c.error("Can't find", filePath);
+      process.exit(1);
     } else {
-      filePath = arg;
-      if (!fs.existsSync(filePath)) {
-        c.error("Can't find", filePath);
-        process.exit(1);
-      }
-      if (args.length === 1) {
-        direction = "h";
-      }
+      readFileContents(filePath);
     }
+  }
+  if (args.maskPath && !fs.existsSync(args.maskPath)) {
+    c.error("Can't find", args.maskPath);
+    return process.exit(1);
   }
 };
 
+
+// initialize
 parseCliParams();
 
 write(tty.clearScreen);
@@ -235,8 +357,6 @@ write(tty.clearScreen);
 write(tty.cursorInvisible);
 
 flush();
-
-readFileContents();
 
 refreshDropletParams();
 
